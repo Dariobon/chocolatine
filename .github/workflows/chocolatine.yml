@@ -1,0 +1,161 @@
+name: Chocolatine
+
+on:
+  push:
+  pull_request:
+
+env:
+  MIRROR_SSH_URL: git@github.com:epitech-repository/mirror.git
+  EXECUTABLES: my_program
+
+jobs:
+  check_compilation_and_coding_style:
+    name: Check Compilation And Coding Style
+    runs-on: ubuntu-latest
+    container:
+      image: epitechcontent/epitest-docker
+    if: >-
+      !(
+        (github.event_name == 'pull_request' && startsWith(github.head_ref, 'no-ga/')) ||
+        (github.event_name != 'pull_request' && startsWith(github.ref_name, 'no-ga/')) ||
+        env.MIRROR_SSH_URL == format('git@github.com:{0}.git', github.repository) ||
+        env.MIRROR_SSH_URL == format('ssh://git@github.com/{0}.git', github.repository)
+      )
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+
+      - name: Run Banana Check Repo
+        id: banana
+        continue-on-error: true
+        shell: bash
+        run: |
+          banana-check-repo > "${RUNNER_TEMP}/banana-report.txt" 2>&1
+
+      - name: Build Project
+        timeout-minutes: 2
+        shell: bash
+        run: make
+        env:
+          CC: epiclang
+
+      - name: Annotate Coding Style Errors
+        shell: bash
+        run: |
+          report_file="${RUNNER_TEMP}/banana-report.txt"
+
+          [ -f "${report_file}" ] || exit 0
+
+          while IFS= read -r line; do
+            if [[ "${line}" =~ ^([^:]+):([0-9]+):([0-9]+):[[:space:]]*(.*)$ ]]; then
+              printf '::error file=%s,line=%s,col=%s::%s\n' \
+                "${BASH_REMATCH[1]}" \
+                "${BASH_REMATCH[2]}" \
+                "${BASH_REMATCH[3]}" \
+                "${BASH_REMATCH[4]}"
+            elif [[ "${line}" =~ ^([^:]+):([0-9]+):[[:space:]]*(.*)$ ]]; then
+              printf '::error file=%s,line=%s::%s\n' \
+                "${BASH_REMATCH[1]}" \
+                "${BASH_REMATCH[2]}" \
+                "${BASH_REMATCH[3]}"
+            fi
+          done < "${report_file}"
+
+      - name: Fail On Coding Style Errors
+        id: coding_style_status
+        continue-on-error: true
+        shell: bash
+        run: |
+          if [ "${{ steps.banana.outcome }}" = "failure" ]; then
+            echo "has_errors=true" >> "${GITHUB_OUTPUT}"
+            exit 1
+          fi
+
+          echo "has_errors=false" >> "${GITHUB_OUTPUT}"
+
+      - name: Clean Build Artifacts
+        if: always()
+        shell: bash
+        run: make clean
+
+      - name: Check Expected Executables
+        id: executables_status
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          IFS=',' read -r -a executables <<< "${EXECUTABLES}"
+          missing=0
+
+          for executable in "${executables[@]}"; do
+            executable="${executable#"${executable%%[![:space:]]*}"}"
+            executable="${executable%"${executable##*[![:space:]]}"}"
+
+            [ -n "${executable}" ] || continue
+
+            if [ ! -e "${executable}" ]; then
+              printf '::error file=%s::Missing executable: %s\n' "${executable}" "${executable}"
+              missing=1
+              continue
+            fi
+
+            if [ ! -x "${executable}" ]; then
+              printf '::error file=%s::File is not executable: %s\n' "${executable}" "${executable}"
+              missing=1
+            fi
+          done
+
+          if [ "${missing}" -ne 0 ]; then
+            echo "has_errors=true" >> "${GITHUB_OUTPUT}"
+            exit 1
+          fi
+
+          echo "has_errors=false" >> "${GITHUB_OUTPUT}"
+
+      - name: Finalize Compilation Checks
+        if: always()
+        shell: bash
+        run: |
+          if [ "${{ steps.coding_style_status.outputs.has_errors }}" = "true" ] || \
+             [ "${{ steps.executables_status.outputs.has_errors }}" = "true" ]; then
+            exit 1
+          fi
+
+  run_tests:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: check_compilation_and_coding_style
+    container:
+      image: epitechcontent/epitest-docker
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+
+      - name: Run Tests
+        timeout-minutes: 2
+        shell: bash
+        run: make tests_run
+
+  push_to_mirror:
+    name: Push To Mirror
+    runs-on: ubuntu-latest
+    needs: run_tests
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Push Repository To Mirror
+        uses: pixta-dev/repository-mirroring-action@v1
+        with:
+          target_repo_url: ${{ env.MIRROR_SSH_URL }}
+          ssh_private_key: ${{ secrets.GIT_SSH_PRIVATE_KEY }}
