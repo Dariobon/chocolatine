@@ -33,4 +33,7 @@ clean:
 fclean: clean
 	@$(RM) $(NAME)
 
+tests_run:
+	@echo " "
+
 re: fclean all
