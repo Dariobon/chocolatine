@@ -2,7 +2,7 @@
 ** EPITECH PROJECT, 2026
 ** main.c
 ** File description:
-** main
+** mainf
 */
 
 int main(void)
